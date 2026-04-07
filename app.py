@@ -10,7 +10,7 @@ import os
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', os.urandom(24))
 
-socketio = SocketIO(app, cors_allowed_origins="*")  # 移除 eventlet
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")  # 移除 eventlet
 
 # --- MongoDB ---
 MONGO_URL = os.environ.get("MONGO_URL")
