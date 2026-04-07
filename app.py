@@ -10,7 +10,7 @@ socketio = SocketIO(app)
 
 # --- ☁️ MongoDB 雲端連線設定 ---
 # 請將下方引號內的 <db_password> 換成你複製的密碼
-MONGO_URL = "mongodb+srv://unicornntd001_db_user:wi2diCEcZLcQSjM5@goodgodme.ckniblg.mongodb.net/?retryWrites=true&w=majority&appName=goodgodme"
+MONGO_URL = "mongodb+srv://unicornntd001_db_user:wi2diCEcZLcQSjM5@goodgodme.ckniblg.mongodb.net/mantou_chat?retryWrites=true&w=majority"
 
 try:
     client = MongoClient(MONGO_URL)
