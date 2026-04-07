@@ -7,32 +7,40 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import os
 
 app = Flask(__name__)
+# 安全金鑰
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', os.urandom(24))
 
-# --- 修改這裡：設定登入有效期限為 30 分鐘 ---
+# --- 1. 設定登入有效期限為 30 分鐘 ---
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes=30)
 
+# 強制指定 threading 模式，避免 eventlet 警告
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
-# --- MongoDB 連線 (防崩潰保護) ---
+# --- 2. MongoDB 連線與檢查 ---
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb://127.0.0.1:27017/")
+db_connected = False
+collection = None
+
 try:
+    # 設定 2 秒逾時，避免沒開資料庫時卡死
     client = MongoClient(MONGO_URL, serverSelectionTimeoutMS=2000)
     db = client['mantou_chat']
     collection = db['messages']
+    # 測試是否能連線
     client.admin.command('ping')
     db_connected = True
-except Exception:
+    print("✅ [系統訊息] 成功連上 MongoDB 資料庫！")
+except Exception as e:
+    print(f"❌ [系統訊息] 連不上 MongoDB: {e}")
     db_connected = False
-    collection = None
 
-# --- 使用者名單 ---
+# --- 3. 使用者名單 ---
 USERS = {
     "白饅頭": generate_password_hash("0918"),
     "黑糖饅頭": generate_password_hash("1128")
 }
 
-# --- HTML 介面 (完全置中 + 米黃背景) ---
+# --- 4. HTML 介面 (完全置中美化) ---
 html_code = """
 <!DOCTYPE html>
 <html>
@@ -51,6 +59,7 @@ html_code = """
             align-items: center;     
             min-height: 100vh;       
         }
+        /* 登入卡片 */
         .login-container {
             background: white;
             padding: 40px;
@@ -69,6 +78,7 @@ html_code = """
             border: none; border-radius: 8px; cursor: pointer;
             font-weight: bold; color: #5D4037;
         }
+        /* 聊天室容器 */
         .chat-container {
             width: 95%; max-width: 500px; height: 85vh;
             background: white; border-radius: 20px;
@@ -151,6 +161,7 @@ html_code = """
 </html>
 """
 
+# --- 5. 路由 ---
 @app.route('/', methods=['GET', 'POST'])
 def index():
     error = None
@@ -158,7 +169,7 @@ def index():
         username = request.form.get('username')
         password = request.form.get('password')
         if username in USERS and check_password_hash(USERS[username], password):
-            session.permanent = True 
+            session.permanent = True # 啟用 30 分鐘持久化
             session['username'] = username
             return redirect(url_for('index'))
         else:
@@ -166,14 +177,17 @@ def index():
 
     if 'username' in session:
         msgs = []
+        status_error = None
         if db_connected and collection:
             try:
                 msgs = list(collection.find().sort("_id", 1))
                 for m in msgs: m['_id'] = str(m['_id'])
             except:
-                error = "⚠️ 無法讀取舊訊息"
+                status_error = "⚠️ 無法讀取舊訊息"
+        else:
+            status_error = "⚠️ 資料庫未連線，訊息不會儲存！"
         
-        return render_template_string(html_code, logged_in=True, username=session['username'], history=msgs, error=error)
+        return render_template_string(html_code, logged_in=True, username=session['username'], history=msgs, error=status_error)
 
     return render_template_string(html_code, logged_in=False, error=error)
 
@@ -182,6 +196,7 @@ def logout():
     session.clear()
     return redirect(url_for('index'))
 
+# --- 6. Socket 通訊 ---
 @socketio.on('client_send')
 def handle_msg(data):
     if 'username' not in session: return
@@ -189,11 +204,15 @@ def handle_msg(data):
     msg = data.get('msg')
     time = datetime.now().strftime("%H:%M")
     doc = {"user": user, "msg": msg, "time": time}
+    
+    # 只有資料庫連上才存檔
     if db_connected and collection:
         try:
             collection.insert_one(doc)
             doc['_id'] = str(doc['_id'])
-        except: pass
+        except:
+            pass
+            
     emit('server_response', doc, broadcast=True)
 
 if __name__ == '__main__':
