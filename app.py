@@ -8,22 +8,21 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'any_secret_key' 
 socketio = SocketIO(app)
 
-# --- ☁️ MongoDB 雲端連線設定 ---
-# 請將下方引號內的 <db_password> 換成你複製的密碼
-MONGO_URL = "mongodb+srv://unicornntd001_db_user:mantou0929forever@goodgodme.ckniblg.mongodb.net/mantou_chat?retryWrites=true&w=majority"
+
+MONGO_URL = "mongodb+srv://unicornntd001_db_user:dgObjoajC4nf1zmd@goodgodme.ckniblg.mongodb.net/mantou_chat?retryWrites=true&w=majority"
 
 try:
     client = MongoClient(MONGO_URL)
-    db = client['mantou_chat']      # 資料庫名稱
-    collection = db['messages']      # 存放訊息的表格
+    db = client['mantou_chat']    
+    collection = db['messages']     
     print("✅ 成功連線至 MongoDB 雲端資料庫！")
 except Exception as e:
     print(f"❌ 連線失敗: {e}")
 
-# 兩組帳號
+
 USERS = {"白饅頭": "0918", "黑糖饅頭": "1128"}
 
-# --- 🎨 前端 HTML + CSS + JS (秒刪版) ---
+
 html_code = """
 <!DOCTYPE html>
 <html>
@@ -108,7 +107,7 @@ html_code = """
 </html>
 """
 
-# --- 🐍 後端邏輯 ---
+
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
@@ -122,10 +121,10 @@ def index():
         else:
             error = "帳號或密碼錯誤"
 
-    # 從 MongoDB 讀取歷史訊息
+   
     history = []
     if 'username' in session:
-        # 抓取所有訊息並轉為列表，將 MongoDB 的 ID 轉為字串方便前端使用
+       
         msgs = list(collection.find().sort("_id", 1))
         for m in msgs:
             m['_id'] = str(m['_id'])
@@ -144,7 +143,7 @@ def handle_msg(data):
     now = datetime.now().strftime("%H:%M:%S")
     full_data = {"user": data['user'], "msg": data['msg'], "time": now}
     
-    # 💾 直接存入雲端資料庫
+    
     collection.insert_one(full_data)
     
     emit('server_response', broadcast=True)
@@ -154,7 +153,7 @@ def handle_delete(data):
     from bson.objectid import ObjectId
     msg_id = data.get('msg_id')
     if msg_id:
-        # 🗑️ 從雲端資料庫刪除指定 ID 的訊息
+       
         collection.delete_one({"_id": ObjectId(msg_id)})
         emit('server_delete', broadcast=True)
 
