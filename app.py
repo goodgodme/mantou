@@ -1,6 +1,6 @@
 from flask import Flask, render_template_string, request, session, redirect, url_for
 from flask_socketio import SocketIO, emit
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pymongo import MongoClient
 from bson.objectid import ObjectId
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -13,7 +13,7 @@ app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', os.urandom(24))
 # --- 1. 設定登入有效期限為 30 分鐘 ---
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes=30)
 
-# 強制指定 threading 模式，避免 eventlet 警告
+# 強制指定 threading 模式，避開所有警告
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 # --- 2. MongoDB 連線與檢查 ---
@@ -22,16 +22,15 @@ db_connected = False
 collection = None
 
 try:
-    # 設定 2 秒逾時，避免沒開資料庫時卡死
+    # 設定 2 秒逾時
     client = MongoClient(MONGO_URL, serverSelectionTimeoutMS=2000)
     db = client['mantou_chat']
     collection = db['messages']
-    # 測試是否能連線
     client.admin.command('ping')
     db_connected = True
-    print("✅ [系統訊息] 成功連上 MongoDB 資料庫！")
+    print("✅ [系統] 成功連上 MongoDB！紀錄功能已啟動。")
 except Exception as e:
-    print(f"❌ [系統訊息] 連不上 MongoDB: {e}")
+    print(f"❌ [系統] 連不上 MongoDB: {e}")
     db_connected = False
 
 # --- 3. 使用者名單 ---
@@ -40,7 +39,7 @@ USERS = {
     "黑糖饅頭": generate_password_hash("1128")
 }
 
-# --- 4. HTML 介面 (完全置中美化) ---
+# --- 4. HTML 介面 ---
 html_code = """
 <!DOCTYPE html>
 <html>
@@ -54,19 +53,12 @@ html_code = """
             font-family: "Microsoft JhengHei", sans-serif; 
             background-color: #FFF9E3; 
             margin: 0; 
-            display: flex;
-            justify-content: center; 
-            align-items: center;     
+            display: flex; justify-content: center; align-items: center;     
             min-height: 100vh;       
         }
-        /* 登入卡片 */
         .login-container {
-            background: white;
-            padding: 40px;
-            border-radius: 20px;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
-            text-align: center;
-            width: 320px;
+            background: white; padding: 40px; border-radius: 20px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1); text-align: center; width: 320px;
         }
         .login-container h2 { color: #8B4513; margin-bottom: 20px; }
         .login-container input {
@@ -78,7 +70,6 @@ html_code = """
             border: none; border-radius: 8px; cursor: pointer;
             font-weight: bold; color: #5D4037;
         }
-        /* 聊天室容器 */
         .chat-container {
             width: 95%; max-width: 500px; height: 85vh;
             background: white; border-radius: 20px;
@@ -100,7 +91,7 @@ html_code = """
         .time { font-size: 11px; color: #bbb; margin-top: 4px; }
         .input-area { padding: 15px; display: flex; gap: 10px; background: #fff; border-top: 1px solid #eee; }
         #input_msg { flex: 1; padding: 12px; border: 1px solid #ddd; border-radius: 25px; outline: none; }
-        .send-btn { padding: 0 20px; background: #FFD580; border: none; border-radius: 25px; cursor: pointer; font-weight: bold; }
+        .send-btn { padding: 0 20px; background: #FFD580; border: none; border-radius: 25px; cursor: pointer; font-weight: bold; color: #5D4037; }
     </style>
 </head>
 <body>
@@ -169,7 +160,7 @@ def index():
         username = request.form.get('username')
         password = request.form.get('password')
         if username in USERS and check_password_hash(USERS[username], password):
-            session.permanent = True # 啟用 30 分鐘持久化
+            session.permanent = True 
             session['username'] = username
             return redirect(url_for('index'))
         else:
@@ -180,12 +171,14 @@ def index():
         status_error = None
         if db_connected and collection:
             try:
+                # 抓取所有紀錄並轉為字串 ID
                 msgs = list(collection.find().sort("_id", 1))
                 for m in msgs: m['_id'] = str(m['_id'])
+                print(f"📊 [系統] 成功讀取 {len(msgs)} 則歷史訊息")
             except:
                 status_error = "⚠️ 無法讀取舊訊息"
         else:
-            status_error = "⚠️ 資料庫未連線，訊息不會儲存！"
+            status_error = "⚠️ 資料庫未連線，訊息不會儲存"
         
         return render_template_string(html_code, logged_in=True, username=session['username'], history=msgs, error=status_error)
 
@@ -202,16 +195,20 @@ def handle_msg(data):
     if 'username' not in session: return
     user = session['username']
     msg = data.get('msg')
-    time = datetime.now().strftime("%H:%M")
-    doc = {"user": user, "msg": msg, "time": time}
     
-    # 只有資料庫連上才存檔
+    # --- 強制使用台北時區 (UTC+8) ---
+    tz = timezone(timedelta(hours=8))
+    time_str = datetime.now(tz).strftime("%H:%M")
+    
+    doc = {"user": user, "msg": msg, "time": time_str}
+    
     if db_connected and collection:
         try:
             collection.insert_one(doc)
             doc['_id'] = str(doc['_id'])
-        except:
-            pass
+            print(f"💾 [系統] 訊息已存入 MongoDB: {msg}")
+        except Exception as e:
+            print(f"💾 [系統] 存入失敗: {e}")
             
     emit('server_response', doc, broadcast=True)
 
