@@ -1,32 +1,34 @@
 from flask import Flask, render_template_string, request, session, redirect, url_for
 from flask_socketio import SocketIO, emit
 from datetime import datetime
+from pymongo import MongoClient
 import os
-import json
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'any_secret_key' 
 socketio = SocketIO(app)
 
+# --- ☁️ MongoDB 雲端連線設定 ---
+# 請將下方引號內的 <db_password> 換成你複製的密碼
+MONGO_URL = "mongodb+srv://unicornntd001_db_user:wi2diCEcZLcQSjM5@goodgodme.ckniblg.mongodb.net/?retryWrites=true&w=majority&appName=goodgodme"
+
+try:
+    client = MongoClient(MONGO_URL)
+    db = client['mantou_chat']      # 資料庫名稱
+    collection = db['messages']      # 存放訊息的表格
+    print("✅ 成功連線至 MongoDB 雲端資料庫！")
+except Exception as e:
+    print(f"❌ 連線失敗: {e}")
+
 # 兩組帳號
 USERS = {"白饅頭": "0918", "黑糖饅頭": "1128"}
-CHAT_HISTORY = []
 
-# 1. 啟動時讀取檔案紀錄
-if os.path.exists("chat_record.txt"):
-    with open("chat_record.txt", "r", encoding="utf-8") as f:
-        for line in f:
-            try:
-                CHAT_HISTORY.append(json.loads(line))
-            except:
-                continue
-
-# 2. 前端 HTML + CSS + JavaScript
+# --- 🎨 前端 HTML + CSS + JS (秒刪版) ---
 html_code = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>饅頭聊天室</title>
+    <title>饅頭聊天室 - 雲端存檔版</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <style>
         .msg-row { display: flex; margin-bottom: 10px; flex-direction: column; position: relative; }
@@ -46,7 +48,7 @@ html_code = """
 
     {% if not logged_in %}
         <div style="text-align:center; margin-top:100px;">
-            <h2>登入饅頭系統</h2>
+            <h2>登入饅頭系統 (Cloud)</h2>
             <form method="POST">
                 <input name="username" placeholder="帳號" required style="padding:10px;"><br><br>
                 <input name="password" type="password" placeholder="密碼" required style="padding:10px;"><br><br>
@@ -58,21 +60,19 @@ html_code = """
         <h2>使用者：<span style="color:blue;">{{ username }}</span> | <a href="/logout">登出</a></h2>
         
         <div id="msg_box" style="border:1px solid #ccc; height:400px; overflow-y:auto; padding:15px; margin-bottom:10px; background:white; display: flex; flex-direction: column;">
-            {% if history %}
-                {% for item in history %}
-                    {% set is_me = (item.user == username) %}
-                    <div class="msg-row {{ 'my-msg' if is_me else 'other-msg' }}">
-                        <div class="user-name">{{ '我' if is_me else item.user }}</div>
-                        <div style="display: flex; align-items: center; {{ 'flex-direction: row-reverse;' if is_me }}">
-                            <div class="msg-content">{{ item.msg }}</div>
-                            <span class="time">{{ item.time }}</span>
-                            {% if is_me %}
-                                <span class="delete-btn" onclick="deleteMsg({{ loop.index0 }})">×</span>
-                            {% endif %}
-                        </div>
+            {% for item in history %}
+                {% set is_me = (item.user == username) %}
+                <div class="msg-row {{ 'my-msg' if is_me else 'other-msg' }}">
+                    <div class="user-name">{{ '我' if is_me else item.user }}</div>
+                    <div style="display: flex; align-items: center; {{ 'flex-direction: row-reverse;' if is_me }}">
+                        <div class="msg-content">{{ item.msg }}</div>
+                        <span class="time">{{ item.time }}</span>
+                        {% if is_me %}
+                            <span class="delete-btn" onclick="deleteMsg('{{ item._id }}')">×</span>
+                        {% endif %}
                     </div>
-                {% endfor %}
-            {% endif %}
+                </div>
+            {% endfor %}
         </div>
         
         <div style="display: flex; gap: 10px;">
@@ -84,17 +84,9 @@ html_code = """
             var socket = io();
             var myName = "{{ username }}";
 
-            // 接收新訊息
-            socket.on('server_response', function(data) {
-                window.location.reload(); 
-            });
+            socket.on('server_response', function() { window.location.reload(); });
+            socket.on('server_delete', function() { window.location.reload(); });
 
-            // 接收刪除通知
-            socket.on('server_delete', function() {
-                window.location.reload(); 
-            });
-
-            // 傳送
             function send() {
                 var input = document.getElementById('input_msg');
                 if (input.value.trim() !== "") {
@@ -103,9 +95,8 @@ html_code = """
                 }
             }
 
-            // 刪除 (秒刪版)
-            function deleteMsg(index) {
-                socket.emit('client_delete', { index: index });
+            function deleteMsg(msgId) {
+                socket.emit('client_delete', { msg_id: msgId });
             }
 
             document.getElementById('input_msg').addEventListener('keydown', function(e) {
@@ -117,7 +108,8 @@ html_code = """
 </html>
 """
 
-# 3. 後端路由與邏輯
+# --- 🐍 後端邏輯 ---
+
 @app.route('/', methods=['GET', 'POST'])
 def index():
     error = None
@@ -130,8 +122,15 @@ def index():
         else:
             error = "帳號或密碼錯誤"
 
+    # 從 MongoDB 讀取歷史訊息
+    history = []
     if 'username' in session:
-        return render_template_string(html_code, logged_in=True, username=session.get('username'), history=CHAT_HISTORY, error=error)
+        # 抓取所有訊息並轉為列表，將 MongoDB 的 ID 轉為字串方便前端使用
+        msgs = list(collection.find().sort("_id", 1))
+        for m in msgs:
+            m['_id'] = str(m['_id'])
+            history.append(m)
+        return render_template_string(html_code, logged_in=True, username=session.get('username'), history=history, error=error)
     
     return render_template_string(html_code, logged_in=False, error=error)
 
@@ -144,19 +143,19 @@ def logout():
 def handle_msg(data):
     now = datetime.now().strftime("%H:%M:%S")
     full_data = {"user": data['user'], "msg": data['msg'], "time": now}
-    CHAT_HISTORY.append(full_data)
-    with open("chat_record.txt", "a", encoding="utf-8") as f:
-        f.write(json.dumps(full_data, ensure_ascii=False) + "\n")
-    emit('server_response', full_data, broadcast=True)
+    
+    # 💾 直接存入雲端資料庫
+    collection.insert_one(full_data)
+    
+    emit('server_response', broadcast=True)
 
 @socketio.on('client_delete')
 def handle_delete(data):
-    idx = data.get('index')
-    if idx is not None and 0 <= idx < len(CHAT_HISTORY):
-        CHAT_HISTORY.pop(idx)
-        with open("chat_record.txt", "w", encoding="utf-8") as f:
-            for item in CHAT_HISTORY:
-                f.write(json.dumps(item, ensure_ascii=False) + "\n")
+    from bson.objectid import ObjectId
+    msg_id = data.get('msg_id')
+    if msg_id:
+        # 🗑️ 從雲端資料庫刪除指定 ID 的訊息
+        collection.delete_one({"_id": ObjectId(msg_id)})
         emit('server_delete', broadcast=True)
 
 if __name__ == '__main__':
