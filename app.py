@@ -1,3 +1,7 @@
+import warnings
+# 1. 強制消除 RLock 警告，讓終端機畫面清爽
+warnings.filterwarnings("ignore", message=".*RLock.*")
+
 from flask import Flask, render_template_string, request, session, redirect, url_for
 from flask_socketio import SocketIO, emit
 from datetime import datetime, timedelta, timezone
@@ -7,39 +11,35 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import os
 
 app = Flask(__name__)
-# 安全金鑰
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', os.urandom(24))
-
-# --- 1. 設定登入有效期限為 30 分鐘 ---
+# 2. 設定登入保持 30 分鐘
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes=30)
 
-# 強制指定 threading 模式，避開所有警告
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
+# 3. 強制使用 threading 模式，並開啟日誌記錄 (方便檢查網頁有沒有連上來)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading", logger=True, engineio_logger=True)
 
-# --- 2. MongoDB 連線與檢查 ---
-MONGO_URL = os.environ.get("MONGO_URL", "mongodb://127.0.0.1:27017/")
+# --- MongoDB 連線設定 ---
+MONGO_URL = "mongodb://127.0.0.1:27017/"
 db_connected = False
 collection = None
 
 try:
-    # 設定 2 秒逾時
     client = MongoClient(MONGO_URL, serverSelectionTimeoutMS=2000)
     db = client['mantou_chat']
     collection = db['messages']
     client.admin.command('ping')
     db_connected = True
-    print("✅ [系統] 成功連上 MongoDB！紀錄功能已啟動。")
+    print("✅ [資料庫] MongoDB 連線成功！紀錄功能運作中。")
 except Exception as e:
-    print(f"❌ [系統] 連不上 MongoDB: {e}")
-    db_connected = False
+    print(f"❌ [資料庫] MongoDB 連線失敗: {e}")
 
-# --- 3. 使用者名單 ---
+# --- 使用者名單 ---
 USERS = {
     "白饅頭": generate_password_hash("0918"),
     "黑糖饅頭": generate_password_hash("1128")
 }
 
-# --- 4. HTML 介面 ---
+# --- HTML 介面 ---
 html_code = """
 <!DOCTYPE html>
 <html>
@@ -49,38 +49,13 @@ html_code = """
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <style>
         * { box-sizing: border-box; }
-        body { 
-            font-family: "Microsoft JhengHei", sans-serif; 
-            background-color: #FFF9E3; 
-            margin: 0; 
-            display: flex; justify-content: center; align-items: center;     
-            min-height: 100vh;       
-        }
-        .login-container {
-            background: white; padding: 40px; border-radius: 20px;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.1); text-align: center; width: 320px;
-        }
+        body { font-family: "Microsoft JhengHei", sans-serif; background-color: #FFF9E3; margin: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+        .login-container { background: white; padding: 40px; border-radius: 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); text-align: center; width: 320px; }
         .login-container h2 { color: #8B4513; margin-bottom: 20px; }
-        .login-container input {
-            width: 100%; padding: 12px; margin: 10px 0;
-            border: 1px solid #ddd; border-radius: 8px; outline: none;
-        }
-        .login-container button {
-            width: 100%; padding: 12px; background-color: #FFD580;
-            border: none; border-radius: 8px; cursor: pointer;
-            font-weight: bold; color: #5D4037;
-        }
-        .chat-container {
-            width: 95%; max-width: 500px; height: 85vh;
-            background: white; border-radius: 20px;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
-            display: flex; flex-direction: column; overflow: hidden;
-        }
-        .chat-header {
-            background: #FFD580; padding: 15px 20px;
-            display: flex; justify-content: space-between; align-items: center;
-            font-weight: bold; color: #5D4037;
-        }
+        .login-container input { width: 100%; padding: 12px; margin: 10px 0; border: 1px solid #ddd; border-radius: 8px; outline: none; }
+        .login-container button { width: 100%; padding: 12px; background-color: #FFD580; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; color: #5D4037; }
+        .chat-container { width: 95%; max-width: 500px; height: 85vh; background: white; border-radius: 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); display: flex; flex-direction: column; overflow: hidden; }
+        .chat-header { background: #FFD580; padding: 15px 20px; display: flex; justify-content: space-between; align-items: center; font-weight: bold; color: #5D4037; }
         #msg_box { flex: 1; overflow-y: auto; padding: 20px; background: #fdfdfd; }
         .msg-row { display: flex; flex-direction: column; margin-bottom: 15px; }
         .msg-content { max-width: 80%; padding: 10px 15px; border-radius: 18px; font-size: 15px; }
@@ -125,8 +100,14 @@ html_code = """
     </div>
 </div>
 <script>
-    var socket = io();
+    // 4. 強制 Socket 採用最穩定的連線方式，解決 Terminal 沒反應的問題
+    var socket = io.connect(window.location.origin, {
+        transports: ['websocket', 'polling'],
+        reconnection: true
+    });
+
     var myName = "{{ username }}";
+
     function send(){
         let input = document.getElementById("input_msg");
         if(input.value.trim() !== ""){
@@ -134,6 +115,7 @@ html_code = """
             input.value = "";
         }
     }
+
     socket.on("server_response", function(data){
         let box = document.getElementById("msg_box");
         let row = document.createElement("div");
@@ -142,6 +124,7 @@ html_code = """
         box.appendChild(row);
         box.scrollTop = box.scrollHeight;
     });
+
     window.onload = function() {
         let box = document.getElementById("msg_box");
         box.scrollTop = box.scrollHeight;
@@ -152,7 +135,6 @@ html_code = """
 </html>
 """
 
-# --- 5. 路由 ---
 @app.route('/', methods=['GET', 'POST'])
 def index():
     error = None
@@ -168,19 +150,16 @@ def index():
 
     if 'username' in session:
         msgs = []
-        status_error = None
         if db_connected and collection:
             try:
-                # 抓取所有紀錄並轉為字串 ID
-                msgs = list(collection.find().sort("_id", 1))
+                # 5. 直接抓取所有紀錄，移除複雜排序
+                msgs = list(collection.find())
                 for m in msgs: m['_id'] = str(m['_id'])
-                print(f"📊 [系統] 成功讀取 {len(msgs)} 則歷史訊息")
-            except:
-                status_error = "⚠️ 無法讀取舊訊息"
-        else:
-            status_error = "⚠️ 資料庫未連線，訊息不會儲存"
+                print(f"📊 [系統] 從資料庫載入 {len(msgs)} 則紀錄")
+            except Exception as e:
+                print(f"❌ [讀取錯誤] {e}")
         
-        return render_template_string(html_code, logged_in=True, username=session['username'], history=msgs, error=status_error)
+        return render_template_string(html_code, logged_in=True, username=session['username'], history=msgs)
 
     return render_template_string(html_code, logged_in=False, error=error)
 
@@ -189,14 +168,13 @@ def logout():
     session.clear()
     return redirect(url_for('index'))
 
-# --- 6. Socket 通訊 ---
 @socketio.on('client_send')
 def handle_msg(data):
-    if 'username' not in session: return
-    user = session['username']
+    # 6. 移除存檔攔截，強制存檔並印出 Debug 訊息
+    user = session.get('username', '未知用戶')
     msg = data.get('msg')
     
-    # --- 強制使用台北時區 (UTC+8) ---
+    # 台北時區
     tz = timezone(timedelta(hours=8))
     time_str = datetime.now(tz).strftime("%H:%M")
     
@@ -204,14 +182,13 @@ def handle_msg(data):
     
     if db_connected and collection:
         try:
-            collection.insert_one(doc)
-            doc['_id'] = str(doc['_id'])
-            print(f"💾 [系統] 訊息已存入 MongoDB: {msg}")
+            res = collection.insert_one(doc)
+            print(f"💾 [存入成功] 內容: {msg} (ID: {res.inserted_id})")
         except Exception as e:
-            print(f"💾 [系統] 存入失敗: {e}")
+            print(f"💾 [存入失敗] 錯誤: {e}")
             
     emit('server_response', doc, broadcast=True)
 
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 9290))
-    socketio.run(app, host='0.0.0.0', port=port)
+    # 7. 使用 allow_unsafe_werkzeug 確保在沒 eventlet 的情況下也能跑
+    socketio.run(app, host='0.0.0.0', port=9290, allow_unsafe_werkzeug=True)
