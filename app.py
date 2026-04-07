@@ -1,3 +1,5 @@
+from gevent import monkey
+monkey.patch_all()
 from flask import Flask, render_template_string, request, session, redirect, url_for
 from flask_socketio import SocketIO, emit
 from datetime import datetime
