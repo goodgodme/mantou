@@ -1,6 +1,5 @@
 flask
 flask-socketio
-gevent
 gunicorn
 pymongo
 dnspython
